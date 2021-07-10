@@ -28,18 +28,13 @@ unsigned int clap; //clap volume
 void setup()
 {
 
-  // Set clock division factor = 1, run directly off internal 8Mhz clock. Datasheet 6.6.2
-  // Need to unlock CCP first. Datasheet 4.8.1
-
-  CCP = 0xd8;
-  CLKPR = 0x00;     
 
   
   pinMode(MOTOR, OUTPUT);
   turnMotorOff = false;
   digitalWrite(MOTOR, HIGH);
 
-  Serial.begin( 250000 );
+  Serial.begin( 1000000  );
 
   // Set up ADC 
 
@@ -47,6 +42,7 @@ void setup()
   ADMUXB = 0x00;         // Against the Vcc
 
   ADCSRA = 0b10000111;    // Enable ADC, No autotrigger or interrupt, divide by 32 (gives 250Khz @ 8Mhz clock). We are suppoed to be less than 200Khz, but should be ok. 
+
 
 }
 
@@ -94,16 +90,31 @@ unsigned_rolling_average<uint8_t , buffer_size> mid_samples;
 unsigned_rolling_average<uint8_t , buffer_size> new_samples;
 
 unsigned long next_sample = 0;
-#define SAMPLE_PERIOD_MS 100
 
-float rolling_average = 0;    // Start at zero so we will slowly build up to working voltage
+// We take a reading every millisecond 
+/// ..and average each 100 together to filter noise
+// A clap seems to take about 200ms, so we are sampling at 2x 
+// and then we compare pre and post samples to find the definitive clap
+// this is very hard becuase there is less than 1 bit of siggnal in the ADC reading!
+
+#define SAMPLE_PERIOD_MS 1
+#define SAMPLE_COUNT_PER_WINDOW 100      // Max 256 without expanding size of window_total variables
+#define SAMPLE_THRESHOLD (SAMPLE_COUNT_PER_WINDOW/2)  // We have to move down by more than 1/2 of an ADC step. Sort of a low pass filter. 
+
+byte curr_window_sample_count =0; 
+unsigned curr_window_total = 0;    
+
+unsigned prev1_window_total = 0;    // Previous window samples
+unsigned prev2_window_total = 0;    // Dopo previous window samples
+
+byte direction=0;             // 1 up, 0 down 
 
 void loop()
 {
 
   if (millis() >= next_sample) {
 
-    next_sample = millis() + SAMPLE_PERIOD_MS;
+    next_sample +=  SAMPLE_PERIOD_MS;     // Make sure nothing in loop takes more than 100ms!
 
     ADCSRA |= _BV( ADSC );    // Start the first conversion    
 
@@ -111,16 +122,56 @@ void loop()
 
     const uint8_t a = (uint8_t) ADC;                     // Read conversion result. 
 
-    const uint8_t a1 = new_samples.add_sample( a ); 
-    const uint8_t a2 = mid_samples.add_sample( a1 );
-    old_samples.add_sample( a2 );
+    curr_window_total += a;      
+    
+    curr_window_sample_count++;
+    if (curr_window_sample_count >= SAMPLE_COUNT_PER_WINDOW) {
 
-    Serial.print( old_samples.get_average() );
-    Serial.print(" ");
-    Serial.print( mid_samples.get_average() );
-    Serial.print(" ");    
-    Serial.print( new_samples.get_average() );
-    Serial.print("\n");
+      // End of current window
+
+      Serial.print( millis() );
+      Serial.print(" ");
+
+      Serial.print( curr_window_total );
+      Serial.print(" ");
+      Serial.print( prev1_window_total );
+      Serial.print(" ");
+      Serial.print( prev2_window_total );
+      Serial.print(" ");
+
+      // Did we go down since the dopo previous window?
+
+      if ( curr_window_total < prev2_window_total)  {
+
+        // Did we go down by more than the threshold?
+        
+        
+        if  ( (prev2_window_total - curr_window_total) > SAMPLE_THRESHOLD )  {
+                                
+              Serial.print("CLAP");
+
+              // A hacky way to get us a 2 window-period hold-off until next clap.
+              prev2_window_total = 0;
+              prev1_window_total = 0;
+              curr_window_total = 0;
+
+              
+        }
+
+      }
+
+      Serial.print("\n");
+
+      // Bucket bridage the samples down
+      prev2_window_total = prev1_window_total;
+      prev1_window_total = curr_window_total;
+      curr_window_total = 0;
+      curr_window_sample_count=0;
+
+      
+      
+    }
+        
   }
   
 }
