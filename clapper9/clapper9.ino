@@ -82,16 +82,15 @@ void setup()
 }
 
 
-// We take an ADC reading every millisecond 
-// ..and average each 100 readings together to filter noise
+// We take an ADC reading every millisecond, basically becuase the finest handy timer Arduino gives us is millis()
+// Then we average each 100 readings together to filter noise
 // A clap seems to take about 200ms, so we are sampling at 2x 
 // Then we compare current sample to the sample 2 windows ago to find the definitive clap
 // Skipping the sample in the middle should filter out the transision while the clap is actually happening
 // This is all very hard becuase there is less than 1 step of signal in the ADC reading!
 
-#define SAMPLE_PERIOD_MS 1
 #define SAMPLE_COUNT_PER_WINDOW 100      // Max 256 without expanding size of window_total variables
-#define SAMPLE_THRESHOLD 100              // Emperically determined
+#define SAMPLE_THRESHOLD 50              // How much this window has to drop compared to 2nd previous window to detect a clap. Emperically determined
 
 byte curr_window_sample_count =0; 
 unsigned curr_window_total = 0;    
@@ -99,12 +98,14 @@ unsigned curr_window_total = 0;
 unsigned prev1_window_total = 0;    // Previous window samples
 unsigned prev2_window_total = 0;    // Dopo previous window samples
 
+// All times in ms
+
 unsigned long last_clap_time = 0;
 
-unsigned long next_sample = 0; 
+unsigned long last_sample_time = 0; 
 
-#define CLAP_BACKOFF_TIME_MS 200     // Aim to run the motor long enough to get this far away from clapping
-                                     // Remember that our sample window is 100ms, so we need at least double that to avoid overrun
+#define CLAP_BACKOFF_TIME 200     // Aim to run the motor long enough to get this far away from clapping
+                                  // Remember that our sample window is 100ms, so we need at least double that to avoid overrun
 
 
 byte readADC() {
@@ -121,25 +122,31 @@ byte readADC() {
   
 }
 
-void loop()
-{
 
-  if (millis() >= next_sample) {
+// Returns true if a clap is detected
+// Call more than once per millisecond
 
-    //next_sample +=  SAMPLE_PERIOD_MS;     // Make sure nothing in loop takes more than 100ms!
+uint8_t polledClapCheck() {
 
-    next_sample =  millis()+SAMPLE_PERIOD_MS;     // Do it this way for testing so we can have delay()s in there. 
+  uint8_t clap_flag=0;
+
+  unsigned long now = millis();   // Take an atomic snapshot 
+
+  if (now >= last_sample_time) {
+
+    last_sample_time= now;     // Do it this way for testing so we can have delay()s in there. 
     
     const byte a=readADC(); 
 
     curr_window_total += a;      // Accumulate the readings for this window
     
     curr_window_sample_count++;
+    
     if (curr_window_sample_count >= SAMPLE_COUNT_PER_WINDOW) {
 
       // End of current window
 
-      Serial.print( millis() );
+      Serial.print( now );
       Serial.print(" ");
 
       Serial.print( curr_window_total );
@@ -158,41 +165,10 @@ void loop()
         
         if  ( (prev2_window_total - curr_window_total) > SAMPLE_THRESHOLD )  {
 
-              long unsigned this_clap_time = millis(); 
+              // CLAP DETECTED
 
-              // THIS DO IS TESTING ONLY CODE
+              clap_flag = 1; 
 
-              do {
-
-                // Wait a second so people know that we know that we just clapped
-                // (This is just in here for testing.) 
-                motorOff();
-  
-                Serial.print("CLAP ");
-  
-                Serial.print(prev2_window_total - curr_window_total);              
-                
-                Serial.print(" ");
-  
-                const unsigned clap_period = this_clap_time - last_clap_time;
-  
-                // Next time we should stop- aim for backoff-time before the next clap
-                // next_stop_time = this_clap_time + clap_period  - CLAP_BACKOFF_TIME_MS;
-  
-                Serial.print( clap_period/1000.0  );
-  
-                
-                delay(1000);
-                motorOn();
-                this_clap_time = millis();               // Adjust for the fact that we stopped. 
-                delay(1000);      // warm up motor
-                
-
-              } while (0);
-              
-
-              last_clap_time = this_clap_time;
-              
               // A hacky way to get us a 2 window-period hold-off 
               prev2_window_total = 0;
               prev1_window_total = 0;
@@ -204,7 +180,7 @@ void loop()
 
       Serial.print("\n");
 
-      // Bucket bridage the samples down
+      // Bucket brigade the samples down
       prev2_window_total = prev1_window_total;
       prev1_window_total = curr_window_total;
       curr_window_total = 0;
@@ -214,5 +190,53 @@ void loop()
     }
         
   }
+
+  return clap_flag;
+  
+}
+
+void loop() {
+
+  if (polledClapCheck()) {
+    
+    unsigned long now = millis();   // Take an atomic snapshot 
+
+    long unsigned this_clap_time = now; 
+  
+    // THIS DO IS TESTING ONLY CODE
+  
+    do {
+  
+      // Wait a second so people know that we know that we just clapped
+      // (This is just in here for testing.) 
+      motorOff();
+  
+      Serial.print("CLAP ");
+  
+      Serial.print(prev2_window_total - curr_window_total);              
+      
+      Serial.print(" ");
+  
+      const unsigned clap_period = this_clap_time - last_clap_time;
+  
+      // Next time we should stop- aim for backoff-time before the next clap
+      // next_stop_time = this_clap_time + clap_period  - CLAP_BACKOFF_TIME_MS;
+  
+      Serial.print( clap_period/1000.0  );
+  
+      
+      delay(1000);
+      motorOn();
+      this_clap_time = now;               // Adjust for the fact that we stopped. 
+      delay(1000);                        // Warm up motor. Prevents us from seeing the same clap again.
+      
+  
+    } while (0);
+    
+  
+    last_clap_time = this_clap_time;
+    
+  }  
+
   
 }
