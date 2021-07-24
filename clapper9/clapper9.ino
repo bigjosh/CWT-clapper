@@ -49,7 +49,7 @@
 
 // After you do this, you should do "Burn Bootloader" one time on each chip to set the fuses to the above settings.
 
-
+#include <avr/pgmspace.h>     // Almost no RAM on this chip, so we keep all strings in flash with `F()`
 
 #define MOTOR 8     // Motor MOSFET pin
 
@@ -61,24 +61,8 @@ void motorOff(){
   digitalWrite(MOTOR, LOW);  
 }
 
-
-void setup()
-{
-
-  pinMode(MOTOR, OUTPUT);
-
-  // For debug info
-  Serial.begin( 1000000  );
-
-  // Set up ADC
-
-  ADMUXA = 0b001101;    // Read the internal 1.1 reference. Datasheet 16.13.1
-  ADMUXB = 0x00;         // Against the Vcc
-
-  ADCSRA = 0b10000111;    // Enable ADC, No autotrigger or interrupt, divide by 32 (gives 250Khz @ 8Mhz clock). We are suppoed to be less than 200Khz, but should be ok. 
-
-  motorOn(); 
-
+void initMotor() {  
+  pinMode( MOTOR , OUTPUT );
 }
 
 
@@ -92,20 +76,27 @@ void setup()
 #define SAMPLE_COUNT_PER_WINDOW 100      // Max 256 without expanding size of window_total variables
 #define SAMPLE_THRESHOLD 50              // How much this window has to drop compared to 2nd previous window to detect a clap. Emperically determined
 
-byte curr_window_sample_count =0; 
-unsigned curr_window_total = 0;    
+// Note that all times are in milliseconds
 
-unsigned prev1_window_total = 0;    // Previous window samples
-unsigned prev2_window_total = 0;    // Dopo previous window samples
+typedef unsigned long millis_t;
 
-// All times in ms
+// Becuase the cam is a phsycial object, and also becuase we are sampling it at close to its change rate, we might sometimes see the same
+// clap even show up in multipule windows. Avoiding this is easy, we just wait for a holdoff period after detecting a clap before we can
+// detect another. Since the clap period is very long compared to the time period when we can potentially see the same clap twice, this is easy. 
+// No need to try pick the smallest possible value here. 
 
-unsigned long last_clap_time = 0;
+#define CLAP_HOLDOFF_TIME 1000    // Minimum time between consecutive claps. This prevents us from seeing the same clap twice.                                   
+                                  // Should be much less than a clap cycle time, which emperically seems to be 3-4 seconds. 
 
-unsigned long last_sample_time = 0; 
+// We want to be able to clap right after we get a trigger, so we have to position the cam right before the edge that makes a clap.
+// We call the time between when we stop the cam to wait for a trigger and when the blade drops the "preload" time.
+// Ideally we want this to be as close to zero as possible so there is as little a delay betweeen the trigger and the Resulting clap,
+// but there is variation in the time it takes for the motor to make a rotation, and inaccuracies in measuring that time.
+// So we need to aim for a time that is is far enough away from the actual clap that we have low risk of ovvershooting and clapping
+// before we get a trigger. `CLAP_PRELOAD_TIME` sets how long that is. 
+                                  
 
-#define CLAP_BACKOFF_TIME 200     // Aim to run the motor long enough to get this far away from clapping
-                                  // Remember that our sample window is 100ms, so we need at least double that to avoid overrun
+#define CLAP_PRELOAD_TIME 200     // Aim to get the cam this far away from the edge when preloading                                  
 
 
 byte readADC() {
@@ -122,15 +113,31 @@ byte readADC() {
   
 }
 
+void initADC() {
+
+  ADMUXA = 0b001101;      // Read the internal 1.1 reference. Datasheet 16.13.1
+  ADMUXB = 0x00;          // Against the Vcc
+
+  ADCSRA = 0b10000111;    // Enable ADC, No autotrigger or interrupt, divide by 32 (gives 250Khz @ 8Mhz clock). We are suppoed to be less than 200Khz, but should be ok. 
+    
+}
+
 
 // Returns true if a clap is detected
 // Call more than once per millisecond
 
 uint8_t polledClapCheck() {
 
+  static millis_t last_sample_time = 0; 
+  static byte curr_window_sample_count =0; 
+  static unsigned curr_window_total = 0;    
+  
+  static unsigned prev1_window_total = 0;    // Previous window samples
+  static unsigned prev2_window_total = 0;    // Dopo previous window samples  
+
   uint8_t clap_flag=0;
 
-  unsigned long now = millis();   // Take an atomic snapshot 
+  millis_t now = millis();   // Take an atomic snapshot 
 
   if (now >= last_sample_time) {
 
@@ -146,22 +153,13 @@ uint8_t polledClapCheck() {
 
       // End of current window
 
-      Serial.print( now );
-      Serial.print(" ");
-
-      Serial.print( curr_window_total );
-      Serial.print(" ");
-      Serial.print( prev1_window_total );
-      Serial.print(" ");
-      Serial.print( prev2_window_total );
-      Serial.print(" ");
-
       // Did we go down since the dopo previous window?
 
       if ( curr_window_total < prev2_window_total)  {
 
-        // Did we go down by more than the threshold?
-        
+        // Did we go down by more than the threshold?  
+
+        // Note that the math below depends on already knowing that curr < prev2 from the above `if`
         
         if  ( (prev2_window_total - curr_window_total) > SAMPLE_THRESHOLD )  {
 
@@ -178,15 +176,12 @@ uint8_t polledClapCheck() {
 
       }
 
-      Serial.print("\n");
-
       // Bucket brigade the samples down
       prev2_window_total = prev1_window_total;
       prev1_window_total = curr_window_total;
       curr_window_total = 0;
       curr_window_sample_count=0;
-      
-      
+            
     }
         
   }
@@ -195,48 +190,127 @@ uint8_t polledClapCheck() {
   
 }
 
-void loop() {
+// Delay for `delay` milliseconds, but return early if a clap is detected
+// Returns ture if clap. 
 
-  if (polledClapCheck()) {
-    
-    unsigned long now = millis();   // Take an atomic snapshot 
+uint8_t polledClapCheckDelay( uint16_t delay ) {
 
-    long unsigned this_clap_time = now; 
-  
-    // THIS DO IS TESTING ONLY CODE
-  
-    do {
-  
-      // Wait a second so people know that we know that we just clapped
-      // (This is just in here for testing.) 
-      motorOff();
-  
-      Serial.print("CLAP ");
-  
-      Serial.print(prev2_window_total - curr_window_total);              
-      
-      Serial.print(" ");
-  
-      const unsigned clap_period = this_clap_time - last_clap_time;
-  
-      // Next time we should stop- aim for backoff-time before the next clap
-      // next_stop_time = this_clap_time + clap_period  - CLAP_BACKOFF_TIME_MS;
-  
-      Serial.print( clap_period/1000.0  );
-  
-      
-      delay(1000);
-      motorOn();
-      this_clap_time = now;               // Adjust for the fact that we stopped. 
-      delay(1000);                        // Warm up motor. Prevents us from seeing the same clap again.
-      
-  
-    } while (0);
-    
-  
-    last_clap_time = this_clap_time;
-    
-  }  
+  millis_t delayEnd = millis() + delay;
 
+  while ( millis() < delayEnd) {
+    if (polledClapCheck() ) {
+      return 1;
+    }
+  }
+
+  return 0;
   
 }
+
+millis_t prevClapCycleDuration;       // How long did it actually take for us to clap after the last preload pause? Target is CLAP_PRELOAD_TIME
+
+void setup()
+{
+
+  // Set up ADC
+  initADC();
+
+  initMotor(); 
+
+
+  // For debug info
+  Serial.begin( 1000000  );  
+
+  Serial.println( F("CWT-CLAPPER, https://github.com/bigjosh/CWT-clapper"));
+
+  // On power up we need a baseline for the length of a clap before to drop into our loop
+  // so we run a full cycle to time one
+
+  // Turn on motor and wait a backoff period to ignore the case where we instantly detect a clap
+  motorOn();
+  delay(CLAP_HOLDOFF_TIME);
+
+  Serial.print( F("1."));
+  
+  // Now wait for an actual detected clap
+  while (!polledClapCheck());  
+
+  Serial.print( F("2."));
+  
+  const millis_t lastClapTime = millis();
+  delay(CLAP_HOLDOFF_TIME);
+
+  // Now wait for a second actual detected clap (full clap cycle)
+  while (!polledClapCheck());  
+
+  // Collect data to get ready for real cycle
+  prevClapCycleDuration  = millis() - lastClapTime;
+
+  // ...now OK to drop into loop() 
+    
+}
+
+// By convention, loop() is entered immedeiately after a clap has been detected, motor on.
+// Expects `prevClapCycleDuration` to be set to the time the motor was on in the previous clap cycle. 
+
+void loop() {
+  Serial.println( F("Start,d="));   
+  Serial.println( prevClapCycleDuration / 1000.0 );
+  
+
+  const millis_t clapCycleStartTime = millis();   
+  
+  Serial.print("Holdoff.");
+  // Delay to avoid detecting the same clap twice
+  delay(CLAP_HOLDOFF_TIME);         
+
+  // Now we want to position our cam to right before it is about to clap
+
+  const millis_t runtime_to_preload = prevClapCycleDuration - CLAP_PRELOAD_TIME;
+
+  // Now run until we get to the preload stoping point - while checking for a premature clap...
+  Serial.print( runtime_to_preload / 1000.0 );
+  Serial.print( F(" preload.") );
+
+  if (polledClapCheckDelay(runtime_to_preload)) {
+
+    // If we get here, then we clapped before we got to the preload stop point so we overshot.
+     Serial.println( F("overshoot!") );   
+
+    // Update our cycle durration, which will now be shorter so hopefully we will not overshoot again
+    prevClapCycleDuration = millis() - clapCycleStartTime;
+
+    // ... and start a new cycle
+    return;
+    
+  }
+
+  // OK< we are at the expected preload stop point now, so stop
+  
+  motorOff();
+
+  // Wait
+  Serial.print( F("trigger.") );  
+  delay(2000);
+
+  // Time to clap!
+  motorOn();
+  const millis_t preload_start_time = millis();   
+  Serial.print( F("clap.") );
+ 
+  // Wait for the clap to happen (expected in about CLAP_PRELOAD_TIME ms, but not nessisarily)
+  while (!polledClapCheck()); 
+
+  // OK, we just clapped so remember how long the full cycle took
+  // Total cycle = time we ran to get to the preload stop point + time we ran from the stop point to the clap
+
+  const millis_t runtime_after_preload = (millis() - preload_start_time);
+  
+  Serial.print( "postload=" );
+  Serial.println( runtime_after_preload / 1000.0 );     // We want this to be close to CLAP_PRELOAD_TIME
+  
+  
+  prevClapCycleDuration = runtime_to_preload + runtime_after_preload ;
+
+  // OK, drop back into loop() and do it all over again
+}  
