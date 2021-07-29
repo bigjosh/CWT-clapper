@@ -298,28 +298,18 @@ millis_t prevClapCycleDuration=0;  // Total motor on time of last clap cycle,
 // By convention, loop() is entered immedeiately after a clap has been detected, motor on.
 
 void loop() {
-
-  delay( MOTOR_REST_TIME );
-
-  motorOn();
-
-  millis_t last=millis();
-
   
-  while (1) {
+  resetPolledClapCheck();
+  if (polledClapCheckDelay(2600)) {
+    return;
+  }
 
-    resetPolledClapCheck();
-    while (!polledClapCheck());     
-    const millis_t now=millis();
-    motorOff();
-    delay(1000);
-    motorOn();
-    
-    //resetPolledClapCheck();
-    
-    //Serial.println( now - last );    
-    last = now; 
-    
-  };
+  motorOff();
+  delay(1000);    
+  motorOn();
+  
+  //resetPolledClapCheck();
+  while (!polledClapCheck());     
+
 }
   
