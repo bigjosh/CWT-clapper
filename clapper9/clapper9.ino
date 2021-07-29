@@ -98,6 +98,13 @@ typedef unsigned long millis_t;
 
 #define START_HOLDOFF_TIME 200   // Minimum time to wait before lookingg for a clap after starting the motor. 
 
+#define CLAP_MIDPOINT_RUNTIME  2000     // A nice place to stop and rest the motor when we are doing our calibration cycle
+                                        // Should be sort of in the middle, not too close to the star or end
+
+
+#define MOTOR_REST_TIME 1000      // Time we let the motor rest right after a clap. 
+                                 // Also the time we rest in the middle of our calibration cycle to simulate the motor stopping and waiting for the trigger. 
+
 
 // We want to be able to clap right after we get a trigger, so we have to position the cam right before the edge that makes a clap.
 // We call the time between when we stop the cam to wait for a trigger and when the blade drops the "preload" time.
@@ -107,7 +114,7 @@ typedef unsigned long millis_t;
 // before we get a trigger. `CLAP_PRELOAD_TIME` sets how long that is. 
                                   
 
-#define CLAP_PRELOAD_TIME 500     // Aim to get the cam this far away from the edge when preloading. MUST be bigger than START_HOLDOFF_TIME
+#define CLAP_PRELOAD_TIME 800     // Aim to get the cam this far away from the edge when preloading. MUST be bigger than START_HOLDOFF_TIME
 
 
 byte readADC() {
@@ -146,7 +153,7 @@ static unsigned prev2_window_total = 0;    // Dopo previous window samples
 
 void resetPolledClapCheck() {
 
-  last_sample_time = 0; 
+  last_sample_time = millis()+200; // Not possible to detect a clap before this time
   curr_window_sample_count =0; 
   curr_window_total = 0;    
   
@@ -233,8 +240,6 @@ uint8_t polledClapCheckDelay( uint16_t delaytime ) {
 }
 
 
-millis_t prevClapCycleDuration;       // How long did it actually take for us to clap after the last preload pause? Target is CLAP_PRELOAD_TIME
-
 void setup()
 {
 
@@ -255,45 +260,85 @@ void setup()
 
   // Turn on motor and wait a backoff period to ignore the case where we instantly detect a clap
   motorOn();
-  delay(CLAP_HOLDOFF_TIME);
-
   Serial.print( F("1."));
   
   // Now wait for an actual detected clap
   while (!polledClapCheck());  
 
-  Serial.print( F("2."));
-  
-  const millis_t lastClapTime = millis();
-  delay(CLAP_HOLDOFF_TIME);
-
-  // Now wait for a second actual detected clap (full clap cycle)
-  while (!polledClapCheck());  
-
-  // Collect data to get ready for real cycle
-  prevClapCycleDuration  = millis() - lastClapTime;
-
-  // ...now OK to drop into loop() 
+  // ...now OK to drop into loop() which exprects to be entered right after a clap with the motor on
+  // The loop function will see that prevClapCycleDuration==0 and so will do a calibration cycle
     
 }
 
+millis_t prevClapCycleDuration=0;  // Total motor on time of last clap cycle,
+                                    // Starting when we started our motor after previous clap,
+                                    // ending when the most recent clap was detected,
+                                    // excluding time waiting for trigger
+
 // By convention, loop() is entered immedeiately after a clap has been detected, motor on.
-// Expects `prevClapCycleDuration` to be set to the time the motor was on in the previous clap cycle. 
 
 void loop() {
-  
-  const millis_t clapCycleStartTime = millis();   
-  
-  Serial.print( F("\r\nStart,d="));   
-  Serial.print( prevClapCycleDuration  );  
-  
-  Serial.print(".Holdoff");
-  // Delay to avoid detecting the same clap twice
-  delay(CLAP_HOLDOFF_TIME);         
 
-  // Now we want to position our cam to right before it is about to clap 
+  motorOff(); 
+  Serial.print( F(".rest"));   
+  
+  delay( MOTOR_REST_TIME );
 
-  const millis_t clap_to_preload_runtime = (prevClapCycleDuration - CLAP_PRELOAD_TIME) - CLAP_HOLDOFF_TIME;
+  
+  motorOn();   
+  millis_t debug_on1= millis();   // Take an atomic snapshot 
+
+  resetPolledClapCheck();   // We are starting the motor from stop, so reset our filter to we don't detect a false positive.   
+    
+  const millis_t cycleStartStartTime = millis();   
+  
+  Serial.print( F("\r\np="));   
+  Serial.print( prevClapCycleDuration );   
+  
+
+  if (prevClapCycleDuration==0) {
+
+      Serial.print( F(".calibrate"));   
+
+    // First try to get us to a place where we can stop and rest to simulate the stop we would do on a real cycle when waiting for a trigger.
+    // We need this becuase if we just plowed straight on though without stopping the cycle would be shorter becuase it takes to motor
+    // a finite time to speed up again after it has been stopped compared to just running striaght. 
+    
+
+    if (polledClapCheckDelay( CLAP_MIDPOINT_RUNTIME )) {
+
+      // We unexpectedly clapped, so try again.
+
+      Serial.print( F(".premature"));   
+
+      return;
+      
+    }
+
+    motorOff();
+    Serial.print( F(".rest"));   
+
+    delay( MOTOR_REST_TIME );    
+    
+    motorOn();    
+    resetPolledClapCheck();   // We are starting the motor from stop, so reset our filter to we don't detect a false positive. 
+    Serial.print( F(".restart"));   
+    
+    // Wait for the clap to happen
+    while (!polledClapCheck()); 
+    
+    // Accumulate the time the motor has been on since the last clap detected
+    prevClapCycleDuration = millis() - cycleStartStartTime - MOTOR_REST_TIME;
+
+    Serial.print( F(".calibrated "));   
+
+    return;     // Start a real cycle
+        
+  }
+  
+  // Now we want run until we position our cam to right before it is about to clap
+
+  const millis_t clap_to_preload_runtime = prevClapCycleDuration - CLAP_PRELOAD_TIME;
 
   // Now run until we get to the preload stoping point - while checking for a premature clap...
   Serial.print( F(".preload=") );
@@ -304,7 +349,7 @@ void loop() {
     // If we get here, then we clapped before we got to the preload stop point so we overshot.
   
     // Update our cycle durration, which will now be shorter so hopefully we will not overshoot again
-    prevClapCycleDuration = millis() - clapCycleStartTime;
+    prevClapCycleDuration = millis() - cycleStartStartTime;
     
     Serial.print( F(".overshoot!") );   
 
@@ -316,6 +361,8 @@ void loop() {
   // OK, we are at the expected preload stop point now, so stop
   
   motorOff();
+  millis_t debug_off1= millis();   // Take an atomic snapshot 
+  
 
   // Wait
   Serial.print( F(".wait.") );  
@@ -323,15 +370,10 @@ void loop() {
 
   // Time to clap!
   motorOn();
+  
   resetPolledClapCheck();   // We are starting the motor from stop, so reset our filter to we don't detect a false positive. 
   const millis_t preload_run_start_time = millis();   
   Serial.print( F(".triggered") );
-
-  Serial.print(".Holdoff");
-  // Delay to avoid detecting the same clap twice
-  delay(START_HOLDOFF_TIME);
-
-  Serial.print(".untilclap");
    
   // Wait for the clap to happen (expected about CLAP_PRELOAD_TIME ms after we started, but not nessisarily)
   while (!polledClapCheck()); 
@@ -340,9 +382,13 @@ void loop() {
   // Total cycle = time we ran to get to the preload stop point + time we ran from the stop point to the clap
 
   const millis_t preload_to_clap_runtime = (millis() - preload_run_start_time);
-  
-  Serial.print( "postload=" );
+  const millis_t start_to_preload_runttime = debug_off1 - debug_on1;
+  Serial.print( "\r\npreload=" );
+  Serial.println( start_to_preload_runttime );     // We want this to be close to CLAP_PRELOAD_TIME
+  Serial.print( "\r\npostload=" );
   Serial.println( preload_to_clap_runtime  );     // We want this to be close to CLAP_PRELOAD_TIME
+  Serial.print( "\r\ntotalmoto=" );
+  Serial.println( start_to_preload_runttime + preload_to_clap_runtime  );     // We want this to be close to CLAP_PRELOAD_TIME
   
   // We do this calculation of the total time the motor had to run to complete a full cycle
   // Does not include the time we were waiting for a trigger since motor was off.
