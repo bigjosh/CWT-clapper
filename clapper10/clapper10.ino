@@ -231,6 +231,7 @@ void setup()
   //Puase for a second to simulate the time we will be waiting for a trigger
   // (Also gives external user indication that we did accurately see the clap)
   motorOff();
+  // TODO: Real function that waits to hear a clap to trigger goes here.
   delay(1000);
   motorOn();
 
