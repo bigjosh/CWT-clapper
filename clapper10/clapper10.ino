@@ -16,14 +16,13 @@
  * and there is lots of noise also in these readings.
  * 
  * So we aim to detect the most abupt change in that signal - the moment when the blade claps and the motor goes from pushing 
- * a fully streched to spring to not pushing on the blade at all (there is a but of a dead zone after a clap before the cam
+ * a fully streched to spring to not pushing on the blade at all (there is a bit of a dead zone after a clap before the cam
  * touches the blade again).
  * 
  * To find this edge, we both filter out high freqnecy noise and amplify the longer running signal by taking periodic ADC samples 
- * and summing these over a longer window. We have two windows consecutive windows, so when we get to the moment where one window is
+ * and summing these over a longer window. We have two consecutive windows, so when we get to the moment where one window is
  * filled with samples from before the flap and the other is filled with samples from after the clap, there should be enough SNR to detect
  * that by comparing the sums of all the values in each window. 
- * 
  */
 
 
@@ -62,7 +61,7 @@ const byte WINDOW_TIME=4;       // Time between samples
 const unsigned CLAP_DETECT_THRESHOLD=75;
 
 // Aim to be this far away from the the edge of the cam when we stop to wait for a trigger.
-// Too long means higher latency between when we trigger and when we clap
+// Too long means higher latency between when we trigger and when we clap.
 // Too short means a greater chance of overshooting and clapping before a trigger and having to go all the way around again. 
 
 // Remember that this includes the time it takes to detect a clap which is about 2 windows, so the minimum time here that will avoid
@@ -70,7 +69,7 @@ const unsigned CLAP_DETECT_THRESHOLD=75;
 
 const unsigned POSTLOAD_TARGET_DURRATION=900;
 
-// We turn off the motor for this long immedeately after a clap is detected. 
+// We turn off the motor for this long immedeately after a clap is detected.
 // While this is not required for operation, functionally it serves two purposes...
 // Firstly it gives us some external feedback that the clap was accurately detected. Good for troubleshooting.
 // Secondly it gives an erie silience (no motors running) after the loud clap, which I quite like. Gives a moment for the clap echos to make an impact.
@@ -78,18 +77,18 @@ const unsigned POSTLOAD_TARGET_DURRATION=900;
 const unsigned ERIE_SILIENCE_DURRATION=2000;
 
 
-#define MOTOR 8     // Motor MOSFET pin
+#define MOTOR_PIN 8     // Motor MOSFET pin
 
 void motorOn(){
-  digitalWrite(MOTOR, HIGH);  
+  digitalWrite(MOTOR_PIN, HIGH);  
 }
 
 void motorOff(){
-  digitalWrite(MOTOR, LOW);  
+  digitalWrite(MOTOR_PIN, LOW);  
 }
 
 void initMotor() {  
-  pinMode( MOTOR , OUTPUT );
+  pinMode( MOTOR_PIN , OUTPUT );
 }
 
 
