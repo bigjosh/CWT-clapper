@@ -45,27 +45,32 @@
 
 typedef unsigned long millis_t;
 
+// All #defines that start with MOTOR_ concern finding the notch on the cam using the motor current
+// All #defines that start with MIC_   concern finding a loud trigger sound using the microphone
+// Note that these two kinds of finding are completely independant of each other and only one or the other
+// can be happening at any given time. This is good becuase both use the ADC, and we only have one ADC to go around. 
+
 // Number of samples in a window (the are two windows - before- and after-clap)
 // More samples mean better filtering and more amplifcation of the small changes, but bigger also means it takes more
 // samples (and therefore more time) to detect a change. More samples also needs more memory, which we have very little of. 
-const byte WINDOW_SIZE=100;     
+const byte MOTOR_WINDOW_SIZE=100;     
 
 // Time between samples. Shorter would be great, but then we would need more memory. The optimal value captures the full drop 
 // within one window. Emperically this seems to be about 400ms.
-const byte WINDOW_TIME=4;       // Time between samples
+const byte MOTOR_WINDOW_TIME=4;       // Time between samples
 
 // This sets how much the 1st window accumulator must be lower than the 2nd to detect a clap.
 // This depends on how much the value changes between pre- and post-clap (very little) times the number of samples in each window.
 // Lower values can detect a clap more quickly, but can also lead to false positives. 
 
-const unsigned CLAP_DETECT_THRESHOLD=75;
+const unsigned MOTOR_THRESHOLD=75;
 
 // Aim to be this far away from the the edge of the cam when we stop to wait for a trigger.
 // Too long means higher latency between when we trigger and when we clap.
 // Too short means a greater chance of overshooting and clapping before a trigger and having to go all the way around again. 
 
 // Remember that this includes the time it takes to detect a clap which is about 2 windows, so the minimum time here that will avoid
-// premature clapping before preload is WINDOW_SIZE * WINDOW_TIME * 2.
+// premature clapping before preload is MOTOR_WINDOW_SIZE * WINDOW_TIME * 2.
 
 const unsigned POSTLOAD_TARGET_DURRATION=900;
 
@@ -117,8 +122,8 @@ void initADC() {
 
 
 
-byte window1[WINDOW_SIZE];
-byte window2[WINDOW_SIZE];
+byte window1[MOTOR_WINDOW_SIZE];
+byte window2[MOTOR_WINDOW_SIZE];
 
 unsigned window1_total=0;
 unsigned window2_total=0;
@@ -126,40 +131,40 @@ unsigned window2_total=0;
 static millis_t next_sample_time = 0; 
 
 // Reset the clap check filter. It will take about 2 windows until another clap can be detected after reset. 
-void resetPolledClapCheck() {
+void motorResetPolledClapCheck() {
 
   next_sample_time = 0; 
   
   window1_total = 0;    
   window2_total = 0;         
 
-  memset( window1 , 0x00 , WINDOW_SIZE ); 
-  memset( window2 , 0x00 , WINDOW_SIZE ); 
+  memset( window1 , 0x00 , MOTOR_WINDOW_SIZE ); 
+  memset( window2 , 0x00 , MOTOR_WINDOW_SIZE ); 
   
 }
 
 // Returns true if a clap is detected
 // Call more often than once every WINDOW_TIME
 
-uint8_t polledClapCheck() {
+uint8_t motorPolledClapCheck() {
 
   millis_t now = millis();   // Take an atomic snapshot 
 
   if (now >= next_sample_time) {
 
-    next_sample_time= now + WINDOW_TIME;     // Do it this way for testing so we can have delay()s in there. 
+    next_sample_time= now + MOTOR_WINDOW_TIME;     // Do it this way for testing so we can have delay()s in there. 
     
     const byte a=readADC(); 
 
-    const byte window1_pull = window1[WINDOW_SIZE-1];
+    const byte window1_pull = window1[MOTOR_WINDOW_SIZE-1];
     window1_total -= window1_pull;
     
-    const byte window2_pull = window2[WINDOW_SIZE-1];
+    const byte window2_pull = window2[MOTOR_WINDOW_SIZE-1];
     window2_total -= window2_pull;
 
     // Shift the samples in the windows over. I know a ring buffer would be more efficient, but we don't need efficiency here
     // so keep it simple. 
-    for( byte i = (WINDOW_SIZE-1) ; i>0 ; i-- ) {
+    for( byte i = (MOTOR_WINDOW_SIZE-1) ; i>0 ; i-- ) {
       window1[i]=window1[i-1];
       window2[i]=window2[i-1];      
     }
@@ -174,7 +179,7 @@ uint8_t polledClapCheck() {
 
       const unsigned drop = window2_total - window1_total; 
       
-      if (drop >= CLAP_DETECT_THRESHOLD) {
+      if (drop >= MOTOR_THRESHOLD) {
 
         return true;
         
@@ -191,12 +196,12 @@ uint8_t polledClapCheck() {
 // Delay `delaytime` milliseconds, but return early if a clap is detected while waiting
 // Returns ture if clap detected.
 
-uint8_t polledClapCheckDelay( uint16_t delaytime ) {
+uint8_t motorPolledClapCheckDelay( uint16_t delaytime ) {
 
   millis_t endtime = millis() + delaytime;
 
   while ( millis() < endtime ) {
-    if (polledClapCheck() ) {
+    if (motorPolledClapCheck() ) {
       return 1;
     }
   }
@@ -209,7 +214,6 @@ uint8_t polledClapCheckDelay( uint16_t delaytime ) {
 // Total motor on time of last clap cycle,
 
 millis_t prevClapCycleDuration=0;   // clap to clap, excluding time waiting for trigger.
-
 
 void setup()
 {
@@ -224,8 +228,8 @@ void setup()
 
   // Run until we see a clap...
   motorOn();
-  resetPolledClapCheck();
-  while (!polledClapCheck());  
+  motorResetPolledClapCheck();
+  while (!motorPolledClapCheck());  
 
   //Puase for a second to simulate the time we will be waiting for a trigger
   // (Also gives external user indication that we did accurately see the clap)
@@ -234,11 +238,11 @@ void setup()
   delay(1000);
   motorOn();
 
-  resetPolledClapCheck();  
+  motorResetPolledClapCheck();  
 
   // Time the next clap cycle
   const millis_t start = millis(); 
-  while (!polledClapCheck());  
+  while (!motorPolledClapCheck());  
   const millis_t end = millis(); 
 
   // Calculate the durration.
@@ -260,11 +264,11 @@ void loop() {
 
   const uint16_t preload_duration = prevClapCycleDuration - POSTLOAD_TARGET_DURRATION;
   
-  resetPolledClapCheck();
+  motorResetPolledClapCheck();
 
   const millis_t preload_start_time = millis();  // Only used if we clap prematurely to compute the cycle time 
   
-  if (polledClapCheckDelay( preload_duration )) {
+  if (motorPolledClapCheckDelay( preload_duration )) {
     
     const millis_t preload_end_time = millis();  // Only used if we clap prematurely to compute the cycle time 
     
@@ -276,7 +280,7 @@ void loop() {
   // We are now at the preload location
 
   motorOff();
-  resetPolledClapCheck();
+  motorResetPolledClapCheck();
   
   delay(1000);    
 
@@ -285,7 +289,7 @@ void loop() {
   const millis_t postload_start_time = millis();
   motorOn();
   
-  while (!polledClapCheck());
+  while (!motorPolledClapCheck());
 
   // We just clapped, completing this clap cycle. Compute the time this cycle took so we can be ready for the next one.
   
