@@ -65,12 +65,24 @@ const byte MOTOR_WINDOW_TIME=4;       // Time between samples
 
 const unsigned MOTOR_THRESHOLD=75;
 
+// Number of samples in the mic window looking for loud sounds.
+// Grossly speaking, larger window will accept lower freqency sounds.
+
+const unsigned MIC_WINDOW_SIZE=200;
+
+// We need to see a peak-to-peak that is bigger than this within a single sample window to detect a clap sound.
+// Bigger numbers mean louder sound needed. 
+// Current value taken from orginal clapper software. 
+
+const unsigned MIC_THRESHOLD=550;
+
 // Aim to be this far away from the the edge of the cam when we stop to wait for a trigger.
 // Too long means higher latency between when we trigger and when we clap.
 // Too short means a greater chance of overshooting and clapping before a trigger and having to go all the way around again. 
 
 // Remember that this includes the time it takes to detect a clap which is about 2 windows, so the minimum time here that will avoid
 // premature clapping before preload is MOTOR_WINDOW_SIZE * WINDOW_TIME * 2.
+
 
 const unsigned POSTLOAD_TARGET_DURRATION=900;
 
@@ -97,13 +109,16 @@ void initMotor() {
 }
 
 
-byte readADC() {
+// Read only the low 8 bits of the adc. Tosses the highest 2 bits. Usefull to reduce range when the range you are interested happens
+// to fall within an 8 bit window. 
+
+byte readADC_low() {
 
     ADCSRA |= _BV( ADSC );    // Start the conversion    
 
     while ( ADCSRA &  _BV( ADSC ) );      // Wait for bit to clear (indicates conversion done)
 
-    const uint8_t a = (uint8_t) ADC;                     // Read conversion result. 
+    const uint8_t a = ADCL;                     // Read conversion result. 
 
     // Note that we toss the high bits of the sample. Our battery voltage range happens to put our readings right in the middle of the ADC low byte range.
 
@@ -111,15 +126,73 @@ byte readADC() {
   
 }
 
+
+unsigned readADC() {
+
+    ADCSRA |= _BV( ADSC );    // Start the conversion    
+
+    while ( ADCSRA &  _BV( ADSC ) );      // Wait for bit to clear (indicates conversion done)
+
+    const unsigned a = ADC;                     // Read conversion result. 
+
+    // Note that we toss the high bits of the sample. Our battery voltage range happens to put our readings right in the middle of the ADC low byte range.
+
+    return a;
+  
+}
+
+
 void initADC() {
 
-  ADMUXA = 0b001101;      // Read the internal 1.1 reference. Datasheet 16.13.1
   ADMUXB = 0x00;          // Against the Vcc
 
   ADCSRA = 0b10000111;    // Enable ADC, No autotrigger or interrupt, divide by 32 (gives 250Khz @ 8Mhz clock). We are suppoed to be less than 200Khz, but should be ok. 
+  
+}
+
+void setupADCforMotor() {
+
+  ADMUXA = 0b001101;      // Read the internal 1.1 reference. Datasheet 16.13.1
     
 }
 
+void setupADCforMic() {
+
+  // Mic is connected to pin 13, which is ADC0. 
+
+  ADMUXA = 0b00000000;    // Read channel ADC0
+  ADMUXB = 0x00;          // Against the Vcc
+    
+}
+
+
+// TODO: We are likely very heavily oversampling here. We could instead find the highest freq sound we want to 
+// detect and then only sample 2x of that, and do the sampling and threshold checking inside an ISR and sleep between samples. 
+
+bool micCheckForSound() {
+
+  unsigned sample_max = 0;
+  unsigned sample_min = UINT_MAX;
+  
+  for( unsigned window_count = 0 ; window_count < MIC_WINDOW_SIZE; window_count++ ) {
+    
+    unsigned sample = readADC();
+  
+    sample_max = max( sample_max , sample );
+    sample_min = min( sample_min , sample );
+  
+    const unsigned peak_to_peak = sample_max - sample_min;   // Note that peak_to_peak will never be negative - lowest it can be here is 0
+  
+    if ( peak_to_peak >= MIC_THRESHOLD ) {
+      return true;
+    }  
+  
+  }
+    
+ 
+  return false; 
+ 
+}
 
 
 byte window1[MOTOR_WINDOW_SIZE];
@@ -211,6 +284,15 @@ uint8_t motorPolledClapCheckDelay( uint16_t delaytime ) {
 }
 
 
+void waitForMicTrigger() {
+  
+  setupADCforMic();
+
+  while (! micCheckForSound() );
+
+}
+
+
 // Total motor on time of last clap cycle,
 
 millis_t prevClapCycleDuration=0;   // clap to clap, excluding time waiting for trigger.
@@ -218,10 +300,10 @@ millis_t prevClapCycleDuration=0;   // clap to clap, excluding time waiting for 
 void setup()
 {
 
-  initADC();
-
-  initMotor(); 
-
+  initADC(); 
+  initMotor();
+  
+  setupADCforMotor(); 
 
   // On power up we need a baseline for the length of a clap before to drop into our loop
   // so we run a full cycle to time one.
@@ -237,7 +319,7 @@ void setup()
   // TODO: Real function that waits to hear a clap to trigger goes here.
   delay(1000);
   motorOn();
-
+    
   motorResetPolledClapCheck();  
 
   // Time the next clap cycle
@@ -283,12 +365,14 @@ void loop() {
   motorResetPolledClapCheck();
   
   delay(1000);    
+  waitForMicTrigger();
 
   // Triggered. Now run until we detect the clap (should be in about POSTLOAD_TARGET_DURRATION).
 
   const millis_t postload_start_time = millis();
   motorOn();
-  
+
+  setupADCforMotor();
   while (!motorPolledClapCheck());
 
   // We just clapped, completing this clap cycle. Compute the time this cycle took so we can be ready for the next one.
