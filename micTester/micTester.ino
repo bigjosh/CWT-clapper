@@ -5,8 +5,6 @@
 
 const int sampleWindow = 20; // Sample window for mic
 const float threshold = 550.0; //threshold for neighbor clap
-//const float selfThreshold = 999.0234; //threshold for self clap // maxed
-const float selfThreshold = 1022; //threshold for self clap // maxed
 
 boolean turnMotorOff;
 
@@ -16,14 +14,17 @@ int cycleCount;
 float selfCount = 0;
 unsigned int clap; //clap volume
 
+
 void setup()
 {
   pinMode(MOTOR, OUTPUT);
-  turnMotorOff = false;
-//    digitalWrite(MOTOR, HIGH);
-
-
+  Serial.begin(1000000);
+  delay(100);
+  Serial.println( "\n\rmicTester");
 }
+
+
+unsigned clapCount=0;
 
 void loop()
 {
@@ -47,29 +48,16 @@ void loop()
   //float mic = (peakToPeak * 1000.0) / 1024.0;  // convert to percentage
   float mic = peakToPeak;
 
-  //self clap
-  if (mic > selfThreshold) {
-    turnMotorOff = true;
-    selfCount = 0; //reset count
-  }
+  if (mic > threshold) {
 
-  //neighbor clap
-  else if (mic > threshold) {
-    if (selfCount <= waitTime) {
-
+      clapCount++;
+      Serial.print("CLAP ");
+      Serial.println( clapCount );
+      delay(100);
       selfCount = 0;
 
-    }
   }
 
-  if (turnMotorOff && selfCount > 10) {
-    digitalWrite(MOTOR, LOW);
-    turnMotorOff = false;
-  }
-
-  if (selfCount > waitTime ) {
-    digitalWrite(MOTOR, HIGH);
-  }
 
   selfCount++; //always count up
 }
