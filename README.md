@@ -1,4 +1,5 @@
 # CWT-CLAPPER firmware, 2021 josh.com
+![2021-09-25 14 08 47](https://user-images.githubusercontent.com/5520281/134781784-13f62eca-f02f-4c21-8632-c4c72bffcd72.jpg)
 
 
 ## The mission
